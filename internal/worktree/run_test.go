@@ -192,6 +192,7 @@ func TestCriterionC_DetachedSkip(t *testing.T) {
 	sha := strings.TrimSpace(l.gitIn(wt, "rev-parse", "HEAD"))
 	l.gitIn(wt, "checkout", sha)
 
+	// alwaysYes would delete anything prompted — proving --yes must not prompt.
 	f, _, out := l.newFlow(map[string][]github.PR{}, alwaysYes{}, Options{Yes: true})
 
 	_, res, err := f.Run(testRepo)
@@ -199,10 +200,81 @@ func TestCriterionC_DetachedSkip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !dirExists(wt) {
-		t.Fatalf("detached worktree must not be deleted")
+		t.Fatalf("detached worktree must never be deleted under --yes")
 	}
-	assertSkippedReasonContains(t, res, wt, "detached")
+	assertSkippedReasonContains(t, res, wt, "detached HEAD, skipped")
 	_ = out
+}
+
+// Detached worktrees that are clean and pushed are offered per-worktree;
+// answering y deletes them.
+func TestDetachedPromptedAndDeleted(t *testing.T) {
+	l := newLab(t)
+	wt := l.addWorktree("feat-detach")
+	// Detach at main's commit, which is on origin/main.
+	sha := strings.TrimSpace(l.gitIn(wt, "rev-parse", "HEAD"))
+	l.gitIn(wt, "checkout", sha)
+
+	prompt := &scriptedPrompt{replies: []bool{true}}
+	f, h, out := l.newFlow(map[string][]github.PR{}, prompt, Options{})
+	code, res, err := f.Run(testRepo)
+	if err != nil || code != 0 {
+		t.Fatalf("run: code=%d err=%v", code, err)
+	}
+	if len(prompt.asked) != 1 || !strings.Contains(prompt.asked[0], "detached HEAD at") {
+		t.Fatalf("expected one detached prompt, got %v", prompt.asked)
+	}
+	if dirExists(wt) {
+		t.Errorf("consented detached worktree should have been removed")
+	}
+	if len(res.Removed) != 1 || res.Removed[0].Disposition != Detached {
+		t.Errorf("expected exactly the detached worktree removed, got %+v", res.Removed)
+	}
+	if !strings.Contains(out.String(), "Detached HEAD — asked individually:") {
+		t.Errorf("report must group detached worktrees:\n%s", out.String())
+	}
+	if forceUsed(h.Calls) {
+		t.Errorf("no --force")
+	}
+}
+
+func TestDetachedDeclinedKept(t *testing.T) {
+	l := newLab(t)
+	wt := l.addWorktree("feat-detach")
+	sha := strings.TrimSpace(l.gitIn(wt, "rev-parse", "HEAD"))
+	l.gitIn(wt, "checkout", sha)
+
+	f, _, _ := l.newFlow(map[string][]github.PR{}, alwaysNo{}, Options{})
+	_, res, err := f.Run(testRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dirExists(wt) {
+		t.Fatalf("declined detached worktree must be kept")
+	}
+	if len(res.Removed) != 0 {
+		t.Errorf("nothing should be removed, got %+v", res.Removed)
+	}
+}
+
+// A detached worktree with commits not on any remote is skipped as unpushed,
+// never prompted.
+func TestDetachedUnpushedSkipped(t *testing.T) {
+	l := newLab(t)
+	wt := l.addWorktree("feat-detach")
+	sha := strings.TrimSpace(l.gitIn(wt, "rev-parse", "HEAD"))
+	l.gitIn(wt, "checkout", sha)
+	l.commitIn(wt, "local.txt", "never pushed", "local work on detached HEAD")
+
+	f, _, _ := l.newFlow(map[string][]github.PR{}, alwaysYes{}, Options{})
+	_, res, err := f.Run(testRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dirExists(wt) {
+		t.Fatalf("unpushed detached worktree must not be deleted")
+	}
+	assertSkipped(t, res, wt, "unpushed commits")
 }
 
 func TestCriterionC_OpenPRSkip(t *testing.T) {

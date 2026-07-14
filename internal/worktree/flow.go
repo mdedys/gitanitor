@@ -17,6 +17,7 @@ const (
 	Skip Disposition = iota
 	Merged
 	ClosedUnmerged
+	Detached
 )
 
 // Candidate is a classified worktree carrying the reason for its disposition.
@@ -71,8 +72,10 @@ type Result struct {
 }
 
 // classify partitions non-main worktrees into local dispositions and the set
-// still needing a PR lookup. Prunable entries are returned separately.
-func (f Flow) classifyLocal(worktrees []Worktree) (prunable []Worktree, candidates []Worktree, skipped []Candidate, err error) {
+// still needing a PR lookup. Prunable entries and detached-HEAD prompt
+// candidates are returned separately. Clean, pushed detached worktrees have no
+// branch to look a PR up for, so they are offered per-worktree like closed PRs.
+func (f Flow) classifyLocal(worktrees []Worktree) (prunable []Worktree, detached []Candidate, candidates []Worktree, skipped []Candidate, err error) {
 	for _, wt := range worktrees {
 		if wt.IsMain {
 			continue
@@ -80,8 +83,6 @@ func (f Flow) classifyLocal(worktrees []Worktree) (prunable []Worktree, candidat
 		switch {
 		case wt.Prunable:
 			prunable = append(prunable, wt)
-		case wt.Detached:
-			skipped = append(skipped, Candidate{Worktree: wt, Disposition: Skip, Reason: "detached HEAD"})
 		case wt.Locked:
 			reason := "locked"
 			if wt.LockReason != "" {
@@ -91,7 +92,7 @@ func (f Flow) classifyLocal(worktrees []Worktree) (prunable []Worktree, candidat
 		default:
 			dirty, derr := isDirty(f.Exec, wt.Path)
 			if derr != nil {
-				return nil, nil, nil, derr
+				return nil, nil, nil, nil, derr
 			}
 			if dirty {
 				skipped = append(skipped, Candidate{Worktree: wt, Disposition: Skip, Reason: "uncommitted changes"})
@@ -99,16 +100,20 @@ func (f Flow) classifyLocal(worktrees []Worktree) (prunable []Worktree, candidat
 			}
 			unpushed, uerr := isUnpushed(f.Exec, wt.Path)
 			if uerr != nil {
-				return nil, nil, nil, uerr
+				return nil, nil, nil, nil, uerr
 			}
 			if unpushed {
 				skipped = append(skipped, Candidate{Worktree: wt, Disposition: Skip, Reason: "unpushed commits"})
 				continue
 			}
+			if wt.Detached {
+				detached = append(detached, Candidate{Worktree: wt, Disposition: Detached, Reason: "detached HEAD"})
+				continue
+			}
 			candidates = append(candidates, wt)
 		}
 	}
-	return prunable, candidates, skipped, nil
+	return prunable, detached, candidates, skipped, nil
 }
 
 // classifyByPR resolves each remaining candidate against its PRs. The fork

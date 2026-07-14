@@ -20,7 +20,7 @@ func (f Flow) Run(repo github.Repo) (int, Result, error) {
 		return 1, Result{}, err
 	}
 
-	prunable, candidates, localSkipped, err := f.classifyLocal(worktrees)
+	prunable, detached, candidates, localSkipped, err := f.classifyLocal(worktrees)
 	if err != nil {
 		fmt.Fprintln(f.Out, err.Error())
 		return 1, Result{}, err
@@ -42,6 +42,7 @@ func (f Flow) Run(repo github.Repo) (int, Result, error) {
 	skipped := append(localSkipped, prSkipped...)
 	sortByPath(merged)
 	sortByPath(closed)
+	sortByPath(detached)
 	sortByPath(skipped)
 
 	result := Result{Skipped: skipped}
@@ -60,31 +61,26 @@ func (f Flow) Run(repo github.Repo) (int, Result, error) {
 		result.ClearedPrunable = len(prunable)
 	}
 
-	f.report(repo, result, merged, closed, result.ClearedPrunable)
+	f.report(repo, result, merged, closed, detached, result.ClearedPrunable)
 
 	if f.Opts.DryRun {
 		return exitFor(result), result, nil
 	}
 
-	// Act, judgment calls first: closed-PR prompts before the merged batch.
-	for _, c := range closed {
-		if f.Opts.Yes {
-			result.Skipped = append(result.Skipped, Candidate{
-				Worktree: c.Worktree, Disposition: Skip,
-				Reason: "closed PR, skipped (run interactively to delete)"})
-			continue
-		}
-		q := fmt.Sprintf("delete %s (branch %s, PR #%d closed without merging)? [y/N]",
-			c.Worktree.Path, c.Worktree.Branch, c.PR.Number)
-		if f.Prompt.Confirm(q) {
-			if err := Remove(f.Exec, c.Worktree.Path); err != nil {
-				fmt.Fprintln(f.Out, err.Error())
-				result.RemovalFailed = true
-				continue
-			}
-			result.Removed = append(result.Removed, c)
-		}
-	}
+	// Act, judgment calls first: closed-PR and detached prompts before the
+	// merged batch.
+	f.promptEach(&result, closed,
+		"closed PR, skipped (run interactively to delete)",
+		func(c Candidate) string {
+			return fmt.Sprintf("delete %s (branch %s, PR #%d closed without merging)? [y/N]",
+				c.Worktree.Path, c.Worktree.Branch, c.PR.Number)
+		})
+	f.promptEach(&result, detached,
+		"detached HEAD, skipped (run interactively to delete)",
+		func(c Candidate) string {
+			return fmt.Sprintf("delete %s (detached HEAD at %s)? [y/N]",
+				c.Worktree.Path, shortSHA(c.Worktree.Head))
+		})
 
 	// Merged batch: one confirmation for all, unless --yes.
 	if len(merged) > 0 {
@@ -107,6 +103,27 @@ func (f Flow) Run(repo github.Repo) (int, Result, error) {
 	return exitFor(result), result, nil
 }
 
+// promptEach asks a per-worktree y/N question for each candidate and removes
+// consented ones. Under --yes, candidates are skipped with yesReason — a
+// blanket yes doesn't consent to judgment calls.
+func (f Flow) promptEach(result *Result, cs []Candidate, yesReason string, question func(Candidate) string) {
+	for _, c := range cs {
+		if f.Opts.Yes {
+			result.Skipped = append(result.Skipped, Candidate{
+				Worktree: c.Worktree, Disposition: Skip, Reason: yesReason})
+			continue
+		}
+		if f.Prompt.Confirm(question(c)) {
+			if err := Remove(f.Exec, c.Worktree.Path); err != nil {
+				fmt.Fprintln(f.Out, err.Error())
+				result.RemovalFailed = true
+				continue
+			}
+			result.Removed = append(result.Removed, c)
+		}
+	}
+}
+
 func exitFor(r Result) int {
 	if r.RemovalFailed {
 		return 1
@@ -119,7 +136,7 @@ func sortByPath(cs []Candidate) {
 }
 
 // report prints the grouped classification report. Empty groups are omitted.
-func (f Flow) report(repo github.Repo, result Result, merged, closed []Candidate, prunableCount int) {
+func (f Flow) report(repo github.Repo, result Result, merged, closed, detached []Candidate, prunableCount int) {
 	printed := false
 
 	if prunableCount > 0 {
@@ -134,6 +151,13 @@ func (f Flow) report(repo github.Repo, result Result, merged, closed []Candidate
 	if len(closed) > 0 {
 		fmt.Fprintln(f.Out, "Closed without merging — asked individually:")
 		writeGroup(f.Out, closed)
+		fmt.Fprintln(f.Out)
+		printed = true
+	}
+
+	if len(detached) > 0 {
+		fmt.Fprintln(f.Out, "Detached HEAD — asked individually:")
+		writeGroup(f.Out, detached)
 		fmt.Fprintln(f.Out)
 		printed = true
 	}
@@ -169,7 +193,19 @@ func writeGroup(out interface{ Write([]byte) (int, error) }, cs []Candidate) {
 				detail = fmt.Sprintf("PR #%d closed", c.PR.Number)
 			}
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\n", c.Worktree.Path, c.Worktree.Branch, detail)
+		branch := c.Worktree.Branch
+		if branch == "" && c.Worktree.Detached {
+			branch = shortSHA(c.Worktree.Head)
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", c.Worktree.Path, branch, detail)
 	}
 	tw.Flush()
+}
+
+// shortSHA abbreviates a commit sha for display.
+func shortSHA(sha string) string {
+	if len(sha) > 8 {
+		return sha[:8]
+	}
+	return sha
 }

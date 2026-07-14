@@ -9,6 +9,7 @@ import (
 // Worktree is one entry from `git worktree list --porcelain`.
 type Worktree struct {
 	Path        string
+	Head        string // commit sha
 	Branch      string // refs/heads/ stripped; empty for detached/bare
 	Detached    bool
 	Bare        bool
@@ -59,7 +60,9 @@ func parseList(stdout string) []Worktree {
 			flush()
 			cur = &Worktree{Path: value}
 		case "HEAD":
-			// carried implicitly; not needed for classification
+			if cur != nil {
+				cur.Head = value
+			}
 		case "branch":
 			if cur != nil {
 				cur.Branch = strings.TrimPrefix(value, "refs/heads/")

@@ -34,7 +34,7 @@ func TestClassifyLocal_DirtyDetectedFromStatusV2(t *testing.T) {
 		{Path: "/wt/clean", Branch: "clean"},
 		{Path: "/wt/dirty", Branch: "dirty"},
 	}
-	_, candidates, skipped, err := f.classifyLocal(worktrees)
+	_, _, candidates, skipped, err := f.classifyLocal(worktrees)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestClassifyLocal_UnpushedAhead(t *testing.T) {
 		map[string]string{
 			"/wt/ahead": "# branch.oid abc\n# branch.head feat\n# branch.upstream origin/feat\n# branch.ab +2 -0\n",
 		}, nil)}}
-	_, candidates, skipped, err := f.classifyLocal([]Worktree{
+	_, _, candidates, skipped, err := f.classifyLocal([]Worktree{
 		{Path: "/wt/main", IsMain: true},
 		{Path: "/wt/ahead", Branch: "ahead"},
 	})
@@ -75,7 +75,7 @@ func TestClassifyLocal_GoneUpstreamFallbackUnpushed(t *testing.T) {
 		map[string]string{
 			"/wt/gone": "", // no remote ref contains HEAD ⇒ local-only
 		})}}
-	_, candidates, skipped, err := f.classifyLocal([]Worktree{
+	_, _, candidates, skipped, err := f.classifyLocal([]Worktree{
 		{Path: "/wt/main", IsMain: true},
 		{Path: "/wt/gone", Branch: "gone"},
 	})
@@ -99,7 +99,7 @@ func TestClassifyLocal_GoneUpstreamButOnRemoteIsCandidate(t *testing.T) {
 		map[string]string{
 			"/wt/merged": "  origin/main\n", // HEAD reachable from a remote ref
 		})}}
-	_, candidates, skipped, err := f.classifyLocal([]Worktree{
+	_, _, candidates, skipped, err := f.classifyLocal([]Worktree{
 		{Path: "/wt/main", IsMain: true},
 		{Path: "/wt/merged", Branch: "merged"},
 	})
@@ -108,6 +108,52 @@ func TestClassifyLocal_GoneUpstreamButOnRemoteIsCandidate(t *testing.T) {
 	}
 	if len(candidates) != 1 {
 		t.Errorf("delete-on-merge branch should be a candidate, got %+v skipped=%+v", candidates, skipped)
+	}
+}
+
+// Detached worktrees: clean and pushed ⇒ per-worktree prompt candidate; the
+// dirty and unpushed safety checks still win; locked wins over detached.
+func TestClassifyLocal_Detached(t *testing.T) {
+	f := Flow{Exec: &exec.Fake{Responder: cannedGit(
+		map[string]string{
+			"/wt/det-clean": "# branch.oid abc\n# branch.head (detached)\n",
+			"/wt/det-dirty": "# branch.oid abc\n# branch.head (detached)\n1 .M N... 100644 100644 100644 aaa bbb file.go\n",
+			"/wt/det-local": "# branch.oid abc\n# branch.head (detached)\n",
+		},
+		map[string]string{
+			"/wt/det-clean": "  origin/main\n", // HEAD reachable from a remote ref
+			"/wt/det-local": "",                // local-only commit
+		})}}
+
+	worktrees := []Worktree{
+		{Path: "/wt/main", IsMain: true},
+		{Path: "/wt/det-clean", Detached: true},
+		{Path: "/wt/det-dirty", Detached: true},
+		{Path: "/wt/det-local", Detached: true},
+		{Path: "/wt/det-locked", Detached: true, Locked: true, LockReason: "usb drive"},
+	}
+	_, detached, candidates, skipped, err := f.classifyLocal(worktrees)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 0 {
+		t.Errorf("detached worktrees never join the PR lookup, got %+v", candidates)
+	}
+	if len(detached) != 1 || detached[0].Worktree.Path != "/wt/det-clean" {
+		t.Errorf("clean pushed detached worktree should be a prompt candidate, got %+v", detached)
+	}
+	reasons := map[string]string{}
+	for _, s := range skipped {
+		reasons[s.Worktree.Path] = s.Reason
+	}
+	if reasons["/wt/det-dirty"] != "uncommitted changes" {
+		t.Errorf("dirty detached reason = %q", reasons["/wt/det-dirty"])
+	}
+	if reasons["/wt/det-local"] != "unpushed commits" {
+		t.Errorf("local-only detached reason = %q", reasons["/wt/det-local"])
+	}
+	if reasons["/wt/det-locked"] != "locked: usb drive" {
+		t.Errorf("locked detached reason = %q", reasons["/wt/det-locked"])
 	}
 }
 
