@@ -413,6 +413,34 @@ func TestCriterionG_AncestryComparisonFailureAbortsBeforeMutation(t *testing.T) 
 	}
 }
 
+func TestCriterionG_ComparisonFailureReportsCompleteScanWithoutMutation(t *testing.T) {
+	refs := branchRefs("main", "safe", "later-safe", "untouched")
+	fake := newBranchRunner(refs, mainWorktree(), branchPRs{
+		"safe":       {{Number: 56, State: github.Merged, Owner: "acme", HeadOID: "remote-head"}},
+		"later-safe": {{Number: 57, State: github.Merged, Owner: "acme", HeadOID: "later-safe-tip"}},
+	})
+	fake.headLocal = map[string]bool{"remote-head": false}
+	fake.compareErr = "gh: Not Found (HTTP 404)"
+	out := &strings.Builder{}
+	code, result, err := (Flow{Exec: fake, Prompt: noPrompt{}, Out: out, Opts: Options{Yes: true}}).Run(branchTestRepo)
+	if err == nil || code != 1 {
+		t.Fatalf("comparison failure must still exit 1: code=%d err=%v", code, err)
+	}
+	for _, want := range []string{"Scanned 4 local branches", "safe", "later-safe", "untouched", "Deleting (merged)", "classification failed", "No branches were modified", "HTTP 404"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("failure report missing %q:\n%s", want, out.String())
+		}
+	}
+	if len(result.Removed) != 0 {
+		t.Fatalf("classification failure must not mutate: %+v", result.Removed)
+	}
+	for _, call := range fake.base.Calls {
+		if call.Name == "git" && len(call.Args) > 0 && call.Args[0] == "branch" {
+			t.Fatalf("classification failure must not delete: %v", call)
+		}
+	}
+}
+
 func TestCriterionG_DeletionFailureContinuesAndReturnsOne(t *testing.T) {
 	refs := branchRefs("main", "a", "b")
 	prs := branchPRs{

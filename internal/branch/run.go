@@ -37,12 +37,14 @@ func (f Flow) Run(repo github.Repo) (int, Result, error) {
 		f.printError(err)
 		return 1, Result{}, err
 	}
-	result, err := f.classify(refs, checked, prs, repo)
-	if err != nil {
-		f.printError(err)
-		return 1, Result{}, err
-	}
+	result, classificationErr := f.classify(refs, checked, prs, repo)
 	sortResult(&result)
+	if classificationErr != nil {
+		f.report(repo, len(refs), result)
+		f.printErrorString("No branches were modified because classification failed.")
+		f.printError(classificationErr)
+		return 1, result, classificationErr
+	}
 
 	f.report(repo, len(refs), result)
 	if f.Opts.DryRun {

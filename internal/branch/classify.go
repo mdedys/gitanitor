@@ -1,6 +1,7 @@
 package branch
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 func (f Flow) classify(refs []Ref, checked map[string][]string, prs map[string][]github.PR, repo github.Repo) (Result, error) {
 	result := Result{}
+	var failures []error
 	for _, ref := range refs {
 		paths := checked[ref.Name]
 		if ref.Name == repo.DefaultBranch {
@@ -47,11 +49,15 @@ func (f Flow) classify(refs []Ref, checked map[string][]string, prs map[string][
 		for i := range historical {
 			pr := &historical[i]
 			if pr.HeadOID == "" {
-				return Result{}, &GitError{Stderr: fmt.Sprintf("PR #%d is missing its recorded head commit", pr.Number)}
+				failures = appendClassificationFailure(&result, failures, ref,
+					fmt.Sprintf("PR #%d is missing its recorded head commit", pr.Number))
+				break
 			}
 			covered, err := coversTip(f.Exec, repo, ref.OID, pr.HeadOID)
 			if err != nil {
-				return Result{}, fmt.Errorf("compare branch %s with PR #%d: %w", ref.Name, pr.Number, err)
+				failures = appendClassificationFailure(&result, failures, ref,
+					fmt.Sprintf("compare branch %s with PR #%d: %v", ref.Name, pr.Number, err))
+				break
 			}
 			if covered {
 				switch pr.State {
@@ -64,6 +70,9 @@ func (f Flow) classify(refs []Ref, checked map[string][]string, prs map[string][
 			if localCommitExists(f.Exec, pr.HeadOID) {
 				localHeads = append(localHeads, pr.HeadOID)
 			}
+		}
+		if hasClassificationFailure(result, ref.Name) {
+			continue
 		}
 
 		sort.Slice(coveredMerged, func(i, j int) bool { return coveredMerged[i].Number < coveredMerged[j].Number })
@@ -80,7 +89,9 @@ func (f Flow) classify(refs []Ref, checked map[string][]string, prs map[string][
 		default:
 			unique, err := localUniqueCount(f.Exec, ref.OID, localHeads)
 			if err != nil {
-				return Result{}, fmt.Errorf("count local-only commits for branch %s: %w", ref.Name, err)
+				failures = appendClassificationFailure(&result, failures, ref,
+					fmt.Sprintf("count local-only commits for branch %s: %v", ref.Name, err))
+				continue
 			}
 			reason := historicalSummary(historical)
 			if unique > 0 {
@@ -93,7 +104,25 @@ func (f Flow) classify(refs []Ref, checked map[string][]string, prs map[string][
 			}
 		}
 	}
+	if len(failures) > 0 {
+		return result, errors.Join(failures...)
+	}
 	return result, nil
+}
+
+func appendClassificationFailure(result *Result, failures []error, ref Ref, detail string) []error {
+	message := fmt.Sprintf("classification failed for branch %s: %s", ref.Name, detail)
+	result.Skipped = append(result.Skipped, Candidate{Branch: ref, Disposition: Skip, Reason: message})
+	return append(failures, errors.New(message))
+}
+
+func hasClassificationFailure(result Result, branch string) bool {
+	for _, candidate := range result.Skipped {
+		if candidate.Branch.Name == branch && strings.HasPrefix(candidate.Reason, "classification failed for branch ") {
+			return true
+		}
+	}
+	return false
 }
 
 func matchingOwnerPRs(prs []github.PR, owner string) []github.PR {
