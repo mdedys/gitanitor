@@ -1,6 +1,6 @@
 # Local Branch Cleanup Design
 
-## Goal
+## Objective
 
 Add a `gitanitor branches` command that classifies every local Git branch using
 live GitHub pull-request metadata, removes branches whose work is demonstrably
@@ -178,6 +178,81 @@ remote branch.
   exit `0`.
 - Git and GitHub stderr is relayed without replacing its useful details.
 
+## Acceptance Criteria
+
+**(a) CLI contract.** `gitanitor branches` scans every local branch and accepts
+`--yes`/`-y` and `--dry-run`, with `--dry-run` taking precedence; positional
+branch names or patterns are rejected. At least one passing test named with
+`CriterionA` exercises the command and these flag semantics, and
+`go test ./...` exits `0` with output shown. The implementation must not weaken
+or skip pre-existing tests.
+
+**(b) Hard protections.** The GitHub default branch, every branch checked out
+in any worktree, every branch with any matching-owner open PR, and every branch
+with no qualifying PR are never deleted or offered for deletion; checked-out
+reports include the worktree path, and same-named PRs from other owners do not
+affect classification. At least one passing test named with `CriterionB`
+exercises each protection, and `go test ./...` exits `0` with output shown. The
+implementation must not weaken or skip pre-existing tests.
+
+**(c) Merged-PR qualification.** A branch enters the safe merged batch only
+when its local tip equals or is an ancestor of a matching-owner merged PR's
+recorded head commit; the PR qualifies regardless of base branch, and this
+PR-head evidence remains sufficient after squash/delete-on-merge removes
+remote containment. Historical merged PRs do not qualify a reused branch whose
+current tip is newer or divergent, and multiple historical PRs are resolved by
+their relationship to the current tip. Passing tests named with `CriterionC`
+exercise exact, ancestor, deleted-remote, non-default-base, reused-branch, and
+multiple-PR cases; `go test ./...` exits `0` with output shown. The
+implementation must not weaken or skip pre-existing tests.
+
+**(d) Judgment calls.** Covered closed-unmerged branches and branches with
+newer or divergent commits not reachable from any locally known
+remote-tracking ref after a merged or closed PR are offered only through
+individual default-No prompts; prompts identify the PR state/number and
+locally unique commit count where applicable. Newer pushed work without a
+covering merged or closed PR is hard-skipped. Passing tests named with
+`CriterionD` cover closed, unpushed, combined-warning, decline, and
+newer-pushed cases; `go test ./...` exits `0` with output shown. The
+implementation must not weaken or skip pre-existing tests.
+
+**(e) Reporting and consent.** Default mode prints every scanned branch in
+deterministic grouped output, asks judgment calls individually before one safe
+merged-batch confirmation, and defaults every prompt to No. `--yes` deletes
+only the safe merged batch without prompting and skips judgment calls.
+`--dry-run` wins over `--yes`, uses explicit `Would ...` labels, never prompts,
+and performs zero mutation. Passing tests named with `CriterionE` exercise all
+three modes and grouped output; `go test ./...` exits `0` with output shown.
+The implementation must not weaken or skip pre-existing tests.
+
+**(f) Mutation boundaries and revalidation.** Approved refs are deleted
+locally with the equivalent of `git branch -D -- <branch>` only after
+rechecking the expected commit OID and worktree checkout state. A branch that
+moved, disappeared, or became checked out is not deleted. No run deletes or
+prunes a remote branch, remote-tracking ref, or worktree directory, and no run
+invokes fetch or prune. Passing tests named with `CriterionF` assert local
+deletion, untouched remote/worktree state, no fetch/prune invocation, and
+last-moment change protection; `go test ./...` exits `0` with output shown.
+The implementation must not weaken or skip pre-existing tests.
+
+**(g) Failure and exit semantics.** Any preflight, enumeration, GitHub lookup,
+or required ancestry-comparison failure aborts before mutation and exits `1`;
+individual revalidation or deletion failures relay useful Git/GitHub error
+details, allow remaining approved deletions to continue, and make the final
+exit `1`. Successful deletions, declines, dry runs, and no-op runs exit `0`.
+Passing tests named with `CriterionG` cover each failure class, partial
+continuation, stderr relay, and success exit; `go test ./...` exits `0` with
+output shown. The implementation must not weaken or skip pre-existing tests.
+
+**(h) Package and integration boundaries.** Branch cleanup lives in a focused
+`internal/branch` package; repository resolution exposes the GitHub default
+branch; PR lookup exposes recorded head OIDs and preserves branch names as
+GraphQL variables; all Git/`gh` execution remains behind
+`internal/exec.Runner`. Passing tests named with `CriterionH` verify parsing,
+variable-safe query construction, and runner invocations; `go test ./...` and
+`go vet ./...` both exit `0` with output shown. The implementation must not
+weaken or skip pre-existing tests or add vet-suppression workarounds.
+
 ## Testing Strategy
 
 Implementation follows red-green-refactor. Focused GitHub tests verify default
@@ -219,3 +294,9 @@ go vet ./...
 - Worktree-directory removal from the `branches` command.
 - GitHub branch-protection or ruleset queries.
 - Positional branch filters, glob patterns, configuration files, or allowlists.
+
+## Goal
+
+```text
+/goal every criterion (a)-(h) in docs/specs/2026-07-15-local-branch-cleanup-design.md holds, specifically: (a) the branches CLI and flags satisfy the full-scan contract; (b) default, checked-out, open-PR, no-PR, and fork-owner protections hold; (c) only current-tip-covered merged PRs enter the safe batch, including squash/delete-on-merge and non-default-base cases; (d) closed and locally unique work receive the required individual judgment prompts while newer pushed work is skipped; (e) default, --yes, and --dry-run reporting and consent semantics hold; (f) deletion remains local-only and revalidates each ref without fetch or prune; (g) classification is mutation-atomic and failures have the specified continuation and exit behavior; (h) package, GitHub metadata, GraphQL-variable, and Runner boundaries hold; each criterion has at least one passing test whose name references its criterion letter, each check is run and its output shown, `go test ./...` and `go vet ./...` exit 0, no pre-existing test is weakened or skipped, no vet-suppression workaround is added, all implementation work is committed, and the working tree is clean; or stop after 30 turns and report what's blocking
+```
