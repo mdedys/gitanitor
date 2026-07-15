@@ -2,28 +2,81 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/urfave/cli/v2"
 
+	"github.com/mdedys/gitanitor/internal/branch"
 	"github.com/mdedys/gitanitor/internal/exec"
 	"github.com/mdedys/gitanitor/internal/github"
 	"github.com/mdedys/gitanitor/internal/worktree"
 )
 
 func main() {
-	app := &cli.App{
-		Name:  "gitanitor",
-		Usage: "keep a git repository's worktrees tidy",
-		Commands: []*cli.Command{
-			worktreesCommand(),
-		},
-	}
+	app := newApp()
 
 	if err := app.Run(os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func newApp() *cli.App {
+	return &cli.App{
+		Name:  "gitanitor",
+		Usage: "keep a git repository's worktrees tidy",
+		Commands: []*cli.Command{
+			worktreesCommand(),
+			branchesCommand(),
+		},
+	}
+}
+
+func branchesCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "branches",
+		Usage: "remove local branches whose GitHub work is complete",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "skip the merged-batch confirmation"},
+			&cli.BoolFlag{Name: "dry-run", Usage: "print the classification report and exit without modifying refs"},
+		},
+		Action: func(c *cli.Context) error {
+			if c.Args().Len() != 0 {
+				return fmt.Errorf("branches does not accept positional branch names or patterns")
+			}
+			code := runBranches(exec.System{}, branch.Options{Yes: c.Bool("yes"), DryRun: c.Bool("dry-run")})
+			if code != 0 {
+				return cli.Exit("", code)
+			}
+			return nil
+		},
+	}
+}
+
+func runBranches(runner exec.Runner, opts branch.Options) int {
+	if !exec.LookPath("gh") {
+		fmt.Fprintln(os.Stderr, "gitanitor requires the GitHub CLI (gh)")
+		return 1
+	}
+	return runBranchesWith(runner, opts, branch.StdinPrompter{In: os.Stdin, Out: os.Stdout}, os.Stdout)
+}
+
+func runBranchesWith(runner exec.Runner, opts branch.Options, prompt branch.Prompter, out io.Writer) int {
+	if res := runner.Run("git", "rev-parse", "--is-inside-work-tree"); res.ExitCode != 0 {
+		if res.Stderr != "" {
+			fmt.Fprint(out, res.Stderr)
+		}
+		return 1
+	}
+	repo, err := github.ResolveRepo(runner)
+	if err != nil {
+		fmt.Fprintln(out, err.Error())
+		return 1
+	}
+	flow := branch.Flow{Exec: runner, Prompt: prompt, Out: out, Opts: opts}
+	code, _, _ := flow.Run(repo)
+	return code
 }
 
 func worktreesCommand() *cli.Command {

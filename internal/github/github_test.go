@@ -23,6 +23,22 @@ func TestResolveRepo(t *testing.T) {
 	}
 }
 
+func TestCriterionH_ResolveRepoParsesDefaultBranch(t *testing.T) {
+	f := &exec.Fake{Responder: func(name string, args ...string) exec.Result {
+		return exec.Result{Stdout: `{"owner":{"login":"mdedys"},"name":"gitanitor","defaultBranchRef":{"name":"trunk"}}`}
+	}}
+	repo, err := ResolveRepo(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.DefaultBranch != "trunk" {
+		t.Fatalf("DefaultBranch = %q, want trunk", repo.DefaultBranch)
+	}
+	if len(f.Calls) != 1 || !containsArgContaining(f.Calls[0].Args, "defaultBranchRef") {
+		t.Fatalf("repo lookup must request defaultBranchRef, calls=%+v", f.Calls)
+	}
+}
+
 func TestResolveRepo_FailureRelaysStderr(t *testing.T) {
 	f := &exec.Fake{Responder: func(name string, args ...string) exec.Result {
 		return exec.Result{Stderr: "no git remotes found", ExitCode: 1}
@@ -90,6 +106,38 @@ func TestLookupPRs_ParsesNodes(t *testing.T) {
 	}
 }
 
+func TestCriterionH_LookupPRsParsesRecordedHeadOID(t *testing.T) {
+	f := &exec.Fake{Responder: func(name string, args ...string) exec.Result {
+		return exec.Result{Stdout: `{"data":{"repository":{"b0":{"nodes":[{"number":41,"state":"MERGED","headRefOid":"abc123","headRepositoryOwner":{"login":"mdedys"}}]}}}}`}
+	}}
+	got, err := LookupPRs(f, Repo{Owner: "mdedys", Name: "r"}, []string{"feat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got["feat"]) != 1 || got["feat"][0].HeadOID != "abc123" {
+		t.Fatalf("got PRs = %+v", got["feat"])
+	}
+}
+
+func TestCriterionH_CompareCommitsUsesRunnerAndReportsStatus(t *testing.T) {
+	f := &exec.Fake{Responder: func(name string, args ...string) exec.Result {
+		if name != "gh" {
+			t.Fatalf("command = %q, want gh", name)
+		}
+		return exec.Result{Stdout: "ahead\n"}
+	}}
+	status, err := CompareCommits(f, Repo{Owner: "mdedys", Name: "gitanitor"}, "baseoid", "headoid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "ahead" {
+		t.Fatalf("status = %q, want ahead", status)
+	}
+	if len(f.Calls) != 1 || f.Calls[0].Name != "gh" || !containsArg(f.Calls[0].Args, "repos/mdedys/gitanitor/compare/baseoid...headoid") {
+		t.Fatalf("unexpected comparison invocation: %+v", f.Calls)
+	}
+}
+
 func TestLookupPRs_EmptyBranchesNoCall(t *testing.T) {
 	called := false
 	f := &exec.Fake{Responder: func(name string, args ...string) exec.Result {
@@ -116,4 +164,32 @@ func TestLookupPRs_FailureRelaysStderr(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "Bad credentials") {
 		t.Fatalf("expected relayed stderr, got %v", err)
 	}
+}
+
+func TestCriterionG_GraphQLErrorsAreReturned(t *testing.T) {
+	f := &exec.Fake{Responder: func(name string, args ...string) exec.Result {
+		return exec.Result{Stdout: `{"data":{"repository":null},"errors":[{"message":"rate limit exceeded"}]}`}
+	}}
+	_, err := LookupPRs(f, Repo{Owner: "o", Name: "r"}, []string{"feature"})
+	if err == nil || !strings.Contains(err.Error(), "rate limit exceeded") {
+		t.Fatalf("expected GraphQL error, got %v", err)
+	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsArgContaining(args []string, want string) bool {
+	for _, arg := range args {
+		if strings.Contains(arg, want) {
+			return true
+		}
+	}
+	return false
 }

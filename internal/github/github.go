@@ -10,8 +10,9 @@ import (
 
 // Repo identifies the GitHub repository gh will query.
 type Repo struct {
-	Owner string
-	Name  string
+	Owner         string
+	Name          string
+	DefaultBranch string
 }
 
 func (r Repo) String() string { return r.Owner + "/" + r.Name }
@@ -27,10 +28,11 @@ const (
 
 // PR is a single pull request record as returned by the GraphQL query.
 type PR struct {
-	Number int
-	State  PRState
-	URL    string
-	Owner  string
+	Number  int
+	State   PRState
+	URL     string
+	Owner   string
+	HeadOID string
 }
 
 // Error carries gh's stderr so callers can relay it verbatim.
@@ -44,7 +46,7 @@ func (e *Error) Error() string { return strings.TrimSpace(e.Stderr) }
 // remote named upstream over origin when no default is set, so the caller
 // surfaces the result before anything is deleted.
 func ResolveRepo(r exec.Runner) (Repo, error) {
-	res := r.Run("gh", "repo", "view", "--json", "owner,name")
+	res := r.Run("gh", "repo", "view", "--json", "owner,name,defaultBranchRef")
 	if res.ExitCode != 0 {
 		return Repo{}, &Error{Stderr: res.Stderr}
 	}
@@ -53,12 +55,30 @@ func ResolveRepo(r exec.Runner) (Repo, error) {
 		Owner struct {
 			Login string `json:"login"`
 		} `json:"owner"`
-		Name string `json:"name"`
+		Name             string `json:"name"`
+		DefaultBranchRef struct {
+			Name string `json:"name"`
+		} `json:"defaultBranchRef"`
 	}
 	if err := json.Unmarshal([]byte(res.Stdout), &parsed); err != nil {
 		return Repo{}, &Error{Stderr: fmt.Sprintf("could not parse gh repo view output: %v", err)}
 	}
-	return Repo{Owner: parsed.Owner.Login, Name: parsed.Name}, nil
+	return Repo{Owner: parsed.Owner.Login, Name: parsed.Name, DefaultBranch: parsed.DefaultBranchRef.Name}, nil
+}
+
+// CompareCommits asks GitHub whether base is contained by head. The endpoint
+// arguments are commit OIDs, so branch names never enter this request.
+func CompareCommits(r exec.Runner, repo Repo, baseOID, headOID string) (string, error) {
+	endpoint := fmt.Sprintf("repos/%s/%s/compare/%s...%s", repo.Owner, repo.Name, baseOID, headOID)
+	res := r.Run("gh", "api", endpoint, "--jq", ".status")
+	if res.ExitCode != 0 {
+		return "", &Error{Stderr: res.Stderr}
+	}
+	status := strings.TrimSpace(res.Stdout)
+	if status == "" {
+		return "", &Error{Stderr: "gh compare returned an empty status"}
+	}
+	return status, nil
 }
 
 // LookupPRs runs one batched GraphQL query covering every branch and returns
@@ -72,8 +92,9 @@ func LookupPRs(r exec.Runner, repo Repo, branches []string) (map[string][]PR, er
 	query, aliases := buildQuery(repo, branches)
 
 	args := []string{"api", "graphql", "-f", "query=" + query}
-	for alias, branch := range aliases {
-		args = append(args, "-f", alias+"="+branch)
+	for i := range branches {
+		alias := fmt.Sprintf("b%d", i)
+		args = append(args, "-f", alias+"="+aliases[alias])
 	}
 
 	res := r.Run("gh", args...)
@@ -98,7 +119,7 @@ func buildQuery(repo Repo, branches []string) (string, map[string]string) {
 		params = append(params, fmt.Sprintf("$%s: String!", alias))
 		fields = append(fields, fmt.Sprintf(
 			"    %s: pullRequests(headRefName: $%s, first: 20) {\n"+
-				"      nodes { number state mergedAt url headRepositoryOwner { login } }\n"+
+				"      nodes { number state mergedAt url headRefOid headRepositoryOwner { login } }\n"+
 				"    }",
 			alias, alias))
 	}
@@ -122,15 +143,29 @@ func parseResponse(stdout string, aliases map[string]string) (map[string][]PR, e
 					Number              int     `json:"number"`
 					State               PRState `json:"state"`
 					URL                 string  `json:"url"`
+					HeadOID             string  `json:"headRefOid"`
 					HeadRepositoryOwner *struct {
 						Login string `json:"login"`
 					} `json:"headRepositoryOwner"`
 				} `json:"nodes"`
 			} `json:"repository"`
 		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
 		return nil, &Error{Stderr: fmt.Sprintf("could not parse gh graphql output: %v", err)}
+	}
+	if len(parsed.Errors) > 0 {
+		messages := make([]string, 0, len(parsed.Errors))
+		for _, graphqlErr := range parsed.Errors {
+			messages = append(messages, graphqlErr.Message)
+		}
+		return nil, &Error{Stderr: "GitHub GraphQL error: " + strings.Join(messages, "; ")}
+	}
+	if parsed.Data.Repository == nil && len(aliases) > 0 {
+		return nil, &Error{Stderr: "GitHub GraphQL response did not include a repository"}
 	}
 
 	out := make(map[string][]PR, len(aliases))
@@ -142,7 +177,7 @@ func parseResponse(stdout string, aliases map[string]string) (map[string][]PR, e
 			if n.HeadRepositoryOwner != nil {
 				owner = n.HeadRepositoryOwner.Login
 			}
-			prs = append(prs, PR{Number: n.Number, State: n.State, URL: n.URL, Owner: owner})
+			prs = append(prs, PR{Number: n.Number, State: n.State, URL: n.URL, Owner: owner, HeadOID: n.HeadOID})
 		}
 		out[branch] = prs
 	}
