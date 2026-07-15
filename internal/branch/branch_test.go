@@ -399,7 +399,7 @@ func TestCriterionG_EnumerationFailureAbortsBeforeMutation(t *testing.T) {
 	}
 }
 
-func TestCriterionG_AncestryComparisonFailureAbortsBeforeMutation(t *testing.T) {
+func TestCriterionG_AncestryComparisonFailureSkipsFailedBranch(t *testing.T) {
 	refs := branchRefs("main", "safe")
 	fake := newBranchRunner(refs, mainWorktree(), branchPRs{
 		"safe": {{Number: 55, State: github.Merged, Owner: "acme", HeadOID: "remote-head"}},
@@ -413,7 +413,7 @@ func TestCriterionG_AncestryComparisonFailureAbortsBeforeMutation(t *testing.T) 
 	}
 }
 
-func TestCriterionG_ComparisonFailureReportsCompleteScanWithoutMutation(t *testing.T) {
+func TestCriterionG_ComparisonFailureReportsCompleteScanAndContinues(t *testing.T) {
 	refs := branchRefs("main", "safe", "later-safe", "untouched")
 	fake := newBranchRunner(refs, mainWorktree(), branchPRs{
 		"safe":       {{Number: 56, State: github.Merged, Owner: "acme", HeadOID: "remote-head"}},
@@ -426,18 +426,46 @@ func TestCriterionG_ComparisonFailureReportsCompleteScanWithoutMutation(t *testi
 	if err == nil || code != 1 {
 		t.Fatalf("comparison failure must still exit 1: code=%d err=%v", code, err)
 	}
-	for _, want := range []string{"Scanned 4 local branches", "safe", "later-safe", "untouched", "Deleting (merged)", "classification failed", "No branches were modified", "HTTP 404"} {
+	for _, want := range []string{"Scanned 4 local branches", "safe", "later-safe", "untouched", "Deleting (merged)", "classification failed", "Classification failures detected", "HTTP 404"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("failure report missing %q:\n%s", want, out.String())
 		}
 	}
-	if len(result.Removed) != 0 {
-		t.Fatalf("classification failure must not mutate: %+v", result.Removed)
+	if !hasName(result.Removed, "later-safe") || hasName(result.Removed, "safe") {
+		t.Fatalf("only fully classified branches may mutate: %+v", result.Removed)
 	}
+	deletedLaterSafe := false
 	for _, call := range fake.base.Calls {
-		if call.Name == "git" && len(call.Args) > 0 && call.Args[0] == "branch" {
+		if call.Name == "git" && len(call.Args) > 0 && call.Args[0] == "branch" && call.Args[len(call.Args)-1] == "safe" {
 			t.Fatalf("classification failure must not delete: %v", call)
 		}
+		if call.Name == "git" && len(call.Args) > 0 && call.Args[0] == "branch" && call.Args[len(call.Args)-1] == "later-safe" {
+			deletedLaterSafe = true
+		}
+	}
+	if !deletedLaterSafe {
+		t.Fatal("fully classified later branch should still be attempted")
+	}
+}
+
+func TestCriterionG_ComparisonFailureDoesNotBlockClassifiedBranchConsent(t *testing.T) {
+	refs := branchRefs("main", "failed", "safe")
+	fake := newBranchRunner(refs, mainWorktree(), branchPRs{
+		"failed": {{Number: 58, State: github.Merged, Owner: "acme", HeadOID: "remote-head"}},
+		"safe":   {{Number: 59, State: github.Merged, Owner: "acme", HeadOID: "safe-tip"}},
+	})
+	fake.headLocal = map[string]bool{"remote-head": false}
+	fake.compareErr = "gh: Not Found (HTTP 404)"
+	out := &strings.Builder{}
+	code, result, err := (Flow{Exec: fake, Prompt: noPrompt{}, Out: out, Opts: Options{Yes: true}}).Run(branchTestRepo)
+	if err == nil || code != 1 {
+		t.Fatalf("classification failure must remain visible in exit status: code=%d err=%v", code, err)
+	}
+	if !hasName(result.Removed, "safe") || hasName(result.Removed, "failed") {
+		t.Fatalf("only fully classified branch should be deleted: %+v", result.Removed)
+	}
+	if !strings.Contains(out.String(), "Classification failures detected") || !strings.Contains(out.String(), "Deleting (merged)") {
+		t.Fatalf("report must explain continued consent:\n%s", out.String())
 	}
 }
 

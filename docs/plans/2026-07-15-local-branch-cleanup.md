@@ -48,7 +48,7 @@
 - [ ] Report every branch in deterministic groups, use explicit `Would ...` labels in dry-run, and keep `--yes` limited to the safe merged batch.
 - [ ] Prompt closed/local-only candidates individually with default-No questions and confirm the safe merged batch once in normal mode.
 - [ ] Re-read each approved ref and worktree map immediately before `git branch -D -- <branch>`; classify movement/disappearance/new checkout as a per-branch failure and continue.
-- [ ] Ensure classification failures cause zero deletion, deletion failures continue, errors relay stderr, and exit codes match the spec.
+- [ ] Ensure global classification failures cause zero deletion; per-branch classification failures skip only the affected branch while unaffected approved deletions continue; deletion failures continue, errors relay stderr, and exit codes match the spec.
 - [ ] Add criterion-E through criterion-G tests for all modes, grouped output, zero dry-run mutation, no fetch/prune, revalidation races, partial continuation, stderr relay, and success/no-op/decline exits; run focused tests red then green.
 
 ### Task 4: Wire and verify the CLI

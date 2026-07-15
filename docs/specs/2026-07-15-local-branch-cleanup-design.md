@@ -65,7 +65,11 @@ Before changing any ref, the flow gathers and validates all required inputs:
 8. Prompt judgment calls individually, then confirm the safe merged batch.
 9. Revalidate and delete each approved local ref.
 
-No deletion begins unless steps 1 through 6 succeed for the complete scan.
+No branch is deleted unless its own classification succeeds. Global preflight,
+enumeration, or PR lookup failures abort before mutation; a per-branch
+ancestry or local-count failure is reported and skipped so fully classified
+branches can still receive their normal consent flow, with a final exit code
+of `1`.
 
 ## PR-to-Tip Matching
 
@@ -170,8 +174,10 @@ remote branch.
 
 ## Errors and Exit Codes
 
-- Preflight, enumeration, PR lookup, ancestry-comparison, or other
-  classification failures abort before mutation and exit `1`.
+- Preflight, enumeration, or PR lookup failures abort before mutation and exit
+  `1`. A per-branch ancestry-comparison or local-count failure reports the
+  complete scan, skips that branch, allows fully classified branches to finish
+  their normal consent/deletion flow, and still exits `1`.
 - A per-branch deletion or revalidation failure prints Git's error, continues
   with the remaining approved branches, and makes the final exit code `1`.
 - Successful deletions, declined prompts, dry runs, and nothing-to-clean runs
@@ -235,14 +241,17 @@ deletion, untouched remote/worktree state, no fetch/prune invocation, and
 last-moment change protection; `go test ./...` exits `0` with output shown.
 The implementation must not weaken or skip pre-existing tests.
 
-**(g) Failure and exit semantics.** Any preflight, enumeration, GitHub lookup,
-or required ancestry-comparison failure aborts before mutation and exits `1`;
-individual revalidation or deletion failures relay useful Git/GitHub error
-details, allow remaining approved deletions to continue, and make the final
-exit `1`. Successful deletions, declines, dry runs, and no-op runs exit `0`.
-Passing tests named with `CriterionG` cover each failure class, partial
-continuation, stderr relay, and success exit; `go test ./...` exits `0` with
-output shown. The implementation must not weaken or skip pre-existing tests.
+**(g) Failure and exit semantics.** Preflight, enumeration, or GitHub lookup
+failures abort before mutation and exit `1`; a per-branch ancestry-comparison
+or local-count failure reports the complete scan, skips only that branch,
+allows fully classified branches to finish their normal consent/deletion flow,
+and still makes the final exit `1`. Individual revalidation or deletion
+failures relay useful Git/GitHub error details, allow remaining approved
+deletions to continue, and make the final exit `1`. Successful deletions,
+declines, dry runs, and no-op runs exit `0`. Passing tests named with
+`CriterionG` cover each failure class, classified-branch continuation, stderr
+relay, and success exit; `go test ./...` exits `0` with output shown. The
+implementation must not weaken or skip pre-existing tests.
 
 **(h) Package and integration boundaries.** Branch cleanup lives in a focused
 `internal/branch` package; repository resolution exposes the GitHub default
@@ -275,7 +284,8 @@ Tests cover at least:
 - `--yes` skipping all judgment calls;
 - `--dry-run` wording and zero mutation;
 - full grouped reporting;
-- classification failure before any deletion;
+- global lookup failure before any deletion and per-branch classification
+  failure with continued consent for unaffected branches;
 - ref movement or checkout between classification and deletion;
 - continued processing and exit `1` after an individual deletion failure; and
 - successful no-op and declined-prompt exit codes.

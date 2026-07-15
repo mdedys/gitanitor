@@ -9,8 +9,9 @@ import (
 	"github.com/mdedys/gitanitor/internal/github"
 )
 
-// Run performs the full scan and only begins mutation after all inputs have
-// been enumerated, looked up, compared, and classified successfully.
+// Run performs the full scan and only mutates branches that were fully
+// classified. A per-branch classification failure is reported and skipped;
+// unaffected branches can still proceed, and the final exit code remains 1.
 func (f Flow) Run(repo github.Repo) (int, Result, error) {
 	if repo.DefaultBranch == "" {
 		err := &GitError{Stderr: "GitHub repository metadata did not include a default branch"}
@@ -40,14 +41,17 @@ func (f Flow) Run(repo github.Repo) (int, Result, error) {
 	result, classificationErr := f.classify(refs, checked, prs, repo)
 	sortResult(&result)
 	if classificationErr != nil {
+		result.ClassificationFail = true
 		f.report(repo, len(refs), result)
-		f.printErrorString("No branches were modified because classification failed.")
+		f.printErrorString("Classification failures detected; affected branches were skipped. Fully classified branches may still be processed.")
 		f.printError(classificationErr)
-		return 1, result, classificationErr
+	} else {
+		f.report(repo, len(refs), result)
 	}
-
-	f.report(repo, len(refs), result)
 	if f.Opts.DryRun {
+		if classificationErr != nil {
+			return 1, result, classificationErr
+		}
 		return 0, result, nil
 	}
 
@@ -79,8 +83,8 @@ func (f Flow) Run(repo github.Repo) (int, Result, error) {
 		}
 	}
 
-	if result.MutationFail {
-		return 1, result, nil
+	if result.MutationFail || classificationErr != nil {
+		return 1, result, classificationErr
 	}
 	return 0, result, nil
 }

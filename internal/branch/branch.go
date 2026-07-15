@@ -66,13 +66,14 @@ func (p StdinPrompter) Confirm(question string) bool {
 // Result captures classification and mutation outcomes for tests and exit
 // code decisions.
 type Result struct {
-	Merged       []Candidate
-	Closed       []Candidate
-	LocalOnly    []Candidate
-	Skipped      []Candidate
-	Removed      []Candidate
-	Failed       []Candidate
-	MutationFail bool
+	Merged             []Candidate
+	Closed             []Candidate
+	LocalOnly          []Candidate
+	Skipped            []Candidate
+	Removed            []Candidate
+	Failed             []Candidate
+	ClassificationFail bool
+	MutationFail       bool
 }
 
 // Flow owns one complete local-branch scan and cleanup run.
