@@ -34,13 +34,16 @@ Run it from the main worktree or any linked worktree of the repository you want 
 2. **Classify** each worktree locally, then look up PR state for the rest in one batched GraphQL call.
 3. **Act** — prompt individually for closed-unmerged PRs and detached-HEAD worktrees, then confirm the merged batch once, then remove.
 
-The main worktree is never touched. Removal never uses `git worktree remove --force`.
+The main worktree is never touched. Removal uses `git worktree remove --force` only for
+worktrees containing submodules, which git refuses to remove otherwise; that force also
+discards uncommitted changes inside a submodule, whose checkout is reproducible from the
+gitlink the superproject records. Every other worktree is removed without force.
 
 ### What gets skipped
 
 A worktree is reported and left alone when it is:
 
-- **dirty** — has modified, staged, or untracked files
+- **dirty** — has modified, staged, or untracked files; submodule state is ignored
 - **unpushed** — has local commits not on any remote (including branches whose upstream is gone after delete-on-merge)
 - **locked** — the lock reason is shown
 - on a branch with an **open PR** or **no PR**
