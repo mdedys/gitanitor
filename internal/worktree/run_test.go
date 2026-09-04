@@ -3,6 +3,7 @@ package worktree
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -552,4 +553,67 @@ func assertSkippedReasonContains(t *testing.T, res Result, path, substr string) 
 		}
 	}
 	t.Errorf("expected %s skipped with reason containing %q, got %+v", path, substr, res.Skipped)
+}
+
+// A merged worktree containing initialized submodules is removed rather than
+// failing with git's "working trees containing submodules cannot be moved or
+// removed".
+func TestSubmoduleWorktreeIsRemoved(t *testing.T) {
+	l := newLab(t)
+	l.addSubmodule("vendored")
+	wt := l.addWorktree("feat-sub")
+	l.initSubmodulesIn(wt)
+	l.pushBranch(wt, "feat-sub")
+
+	prs := map[string][]github.PR{"feat-sub": {{Number: 90, State: github.Merged, Owner: "mdedys"}}}
+	f, _, out := l.newFlow(prs, alwaysYes{}, Options{Yes: true})
+	code, res, err := f.Run(testRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 || res.RemovalFailed {
+		t.Fatalf("removal failed (code=%d): %s", code, out.String())
+	}
+	if len(res.Removed) != 1 || res.Removed[0].Worktree.Path != wt {
+		t.Fatalf("expected the submodule worktree removed, got %+v\n%s", res.Removed, out.String())
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Fatalf("worktree directory still on disk: %v", err)
+	}
+}
+
+// Content inside a submodule does not make the superproject worktree count as
+// dirty, so a merged worktree is still offered for removal.
+func TestSubmoduleContentIsNotDirty(t *testing.T) {
+	l := newLab(t)
+	l.addSubmodule("vendored")
+	wt := l.addWorktree("feat-subdirty")
+	l.initSubmodulesIn(wt)
+	l.pushBranch(wt, "feat-subdirty")
+	writeFile(t, filepath.Join(wt, "vendored"), "build-artifact.o", "junk")
+
+	dirty, err := isDirty(l.newHybrid(nil), wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dirty {
+		t.Fatalf("submodule content marked the worktree dirty")
+	}
+}
+
+// A real superproject change still marks the worktree dirty and blocks removal.
+func TestSuperprojectChangeStillDirtyWithSubmodules(t *testing.T) {
+	l := newLab(t)
+	l.addSubmodule("vendored")
+	wt := l.addWorktree("feat-realdirty")
+	l.initSubmodulesIn(wt)
+	writeFile(t, wt, "scratch.txt", "uncommitted")
+
+	dirty, err := isDirty(l.newHybrid(nil), wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dirty {
+		t.Fatalf("superproject change was not detected as dirty")
+	}
 }

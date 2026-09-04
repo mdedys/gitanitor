@@ -97,8 +97,10 @@ func parseList(stdout string) []Worktree {
 
 // isDirty reports whether the worktree has modified, staged, or untracked
 // files. Any non-`#` line from status --porcelain=v2 --branch means dirty.
+// Submodule state is ignored: a submodule's checkout is reproducible from the
+// gitlink the superproject records, so content inside one is not work at risk.
 func isDirty(r exec.Runner, path string) (bool, error) {
-	res := r.Run("git", "-C", path, "status", "--porcelain=v2", "--branch")
+	res := r.Run("git", "-C", path, "status", "--porcelain=v2", "--branch", "--ignore-submodules=all")
 	if res.ExitCode != 0 {
 		return false, &GitError{Stderr: res.Stderr}
 	}
@@ -164,12 +166,36 @@ func parseAhead(ab string) int {
 	return n
 }
 
-// Remove deletes a worktree's directory and admin entry. It never passes
-// --force: the states requiring force are exactly the states gitanitor skips.
+// Remove deletes a worktree's directory and admin entry. Force is reserved for
+// worktrees containing submodules, which git refuses to remove otherwise; the
+// other states requiring force are exactly the states gitanitor skips.
 func Remove(r exec.Runner, path string) error {
-	res := r.Run("git", "worktree", "remove", path)
+	args := []string{"worktree", "remove", path}
+	if hasSubmodules(r, path) {
+		args = []string{"worktree", "remove", "--force", path}
+	}
+	res := r.Run("git", args...)
 	if res.ExitCode != 0 {
 		return &GitError{Stderr: res.Stderr}
 	}
 	return nil
+}
+
+// hasSubmodules reports whether the worktree has any initialized submodule.
+// An uninitialized submodule is an empty directory git removes without force.
+func hasSubmodules(r exec.Runner, path string) bool {
+	res := r.Run("git", "-C", path, "submodule", "status")
+	if res.ExitCode != 0 {
+		return false
+	}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		// A leading '-' marks an uninitialized submodule.
+		if !strings.HasPrefix(line, "-") {
+			return true
+		}
+	}
+	return false
 }

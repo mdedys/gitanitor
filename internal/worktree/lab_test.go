@@ -208,3 +208,30 @@ func (s *scriptedPrompt) Confirm(q string) bool {
 	}
 	return false
 }
+
+// addSubmodule adds a submodule to the main worktree and commits the gitlink,
+// so worktrees created afterwards carry it.
+func (l *lab) addSubmodule(name string) {
+	l.t.Helper()
+	subRemote := filepath.Join(filepath.Dir(l.dir), name+".src")
+	if err := os.MkdirAll(subRemote, 0o755); err != nil {
+		l.t.Fatal(err)
+	}
+	l.gitIn(subRemote, "init", "-b", "main")
+	l.gitIn(subRemote, "config", "user.name", "lab")
+	l.gitIn(subRemote, "config", "user.email", "lab@example.com")
+	writeFile(l.t, subRemote, "sub.txt", "sub")
+	l.gitIn(subRemote, "add", ".")
+	l.gitIn(subRemote, "commit", "-m", "sub initial")
+
+	l.git("-c", "protocol.file.allow=always", "submodule", "add", subRemote, name)
+	l.git("commit", "-m", "add submodule "+name)
+	l.git("push", "origin", "main")
+}
+
+// initSubmodulesIn checks out a worktree's submodules, reproducing the state
+// that makes `git worktree remove` refuse without --force.
+func (l *lab) initSubmodulesIn(path string) {
+	l.t.Helper()
+	l.gitIn(path, "-c", "protocol.file.allow=always", "submodule", "update", "--init")
+}
